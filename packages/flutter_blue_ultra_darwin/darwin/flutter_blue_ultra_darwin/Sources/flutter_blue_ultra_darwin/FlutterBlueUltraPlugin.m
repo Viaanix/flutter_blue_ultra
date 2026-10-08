@@ -538,6 +538,10 @@ typedef NS_ENUM(NSUInteger, LogLevel) {
             // device not ready?
             if (writeType == CBCharacteristicWriteWithoutResponse && !peripheral.canSendWriteWithoutResponse) {
                 // canSendWriteWithoutResponse is the current readiness of the peripheral to accept more write requests.
+                [self trace:@"write_refused_not_ready" peripheral:peripheral
+                       data:@{@"characteristic_uuid": characteristicUuid, @"bytes": @(dataLen),
+                              @"awaiting_ready": @([self.didWriteWithoutResponse objectForKey:remoteId] != nil)}
+                      error:nil];
                 NSString* s = @"canSendWriteWithoutResponse is false. you must slow down";
                 result([FlutterError errorWithCode:@"writeCharacteristic" message:s details:NULL]);
                 return;
@@ -581,9 +585,30 @@ typedef NS_ENUM(NSUInteger, LogLevel) {
             // Write to characteristic
             [peripheral writeValue:value forCharacteristic:characteristic type:writeType];
 
-            // remember the most recent write withoutResponse
             if (writeType == CBCharacteristicWriteWithoutResponse) {
-                [self.didWriteWithoutResponse setObject:args forKey:remoteId];
+                // A writeWithoutResponse is "done", from the caller's point of view, once CoreBluetooth
+                // has room for the next one. If the queue still has room right after this write, say so
+                // now: peripheralIsReadyToSendWriteWithoutResponse is only promised after
+                // canSendWriteWithoutResponse has gone false, so waiting for it here could wait out the
+                // caller's whole timeout on a write that had already gone out. If the queue is full,
+                // wait for that callback as before - now a timeout means the queue really is stuck.
+                BOOL canSendAfter = peripheral.canSendWriteWithoutResponse;
+                [self trace:@"write_issued" peripheral:peripheral
+                       data:@{@"characteristic_uuid": characteristicUuid, @"type": @"withoutResponse",
+                              @"bytes": @(dataLen), @"can_send_after": @(canSendAfter)}
+                      error:nil];
+                if (canSendAfter) {
+                    // Cleared first, so a ready callback that arrives later has nothing stale to report
+                    // against whatever write comes next.
+                    [self.didWriteWithoutResponse removeObjectForKey:remoteId];
+                    [self emitWrittenForRequest:args peripheral:peripheral];
+                } else {
+                    [self.didWriteWithoutResponse setObject:args forKey:remoteId];
+                }
+            } else {
+                [self trace:@"write_issued" peripheral:peripheral
+                       data:@{@"characteristic_uuid": characteristicUuid, @"type": @"withResponse", @"bytes": @(dataLen)}
+                      error:nil];
             }
 
             result(@YES);
@@ -1259,6 +1284,7 @@ typedef NS_ENUM(NSUInteger, LogLevel) {
 - (void)centralManager:(CBCentralManager *)central
   didConnectPeripheral:(CBPeripheral *)peripheral
 {
+    [self trace:@"connected" peripheral:peripheral data:nil error:nil];
     Log(LDEBUG, @"didConnectPeripheral");
 
     NSString* remoteId = [[peripheral identifier] UUIDString];
@@ -1288,6 +1314,7 @@ typedef NS_ENUM(NSUInteger, LogLevel) {
     didDisconnectPeripheral:(CBPeripheral *)peripheral
                       error:(NSError *)error
 {
+    [self trace:@"disconnected" peripheral:peripheral data:nil error:error];
     if (error) {
         Log(LERROR, @"didDisconnectPeripheral:");
         Log(LERROR, @"  error: %@", [error localizedDescription]);
@@ -1328,6 +1355,7 @@ typedef NS_ENUM(NSUInteger, LogLevel) {
     didFailToConnectPeripheral:(CBPeripheral *)peripheral
                          error:(NSError *)error
 {
+    [self trace:@"connect_failed" peripheral:peripheral data:nil error:error];
     if (error) {
         Log(LERROR, @"didFailToConnectPeripheral:");
         Log(LERROR, @"  error: %@", [error localizedDescription]);
@@ -1476,6 +1504,11 @@ didDiscoverCharacteristicsForService:(CBService *)service
     didUpdateValueForCharacteristic:(CBCharacteristic *)characteristic
                               error:(NSError *)error
 {
+    // Errors only: this also fires for every notification, which would flood the trace.
+    if (error != nil) {
+        [self trace:@"value_update_failed" peripheral:peripheral
+               data:@{@"characteristic_uuid": [characteristic.UUID uuidStr]} error:error];
+    }
     // this function is called on notifications as well as manual reads
     if (error) {
         Log(LERROR, @"didUpdateValueForCharacteristic:");
@@ -1511,6 +1544,8 @@ didDiscoverCharacteristicsForService:(CBService *)service
     didWriteValueForCharacteristic:(CBCharacteristic *)characteristic
                              error:(NSError *)error
 {
+    [self trace:@"write_response" peripheral:peripheral
+           data:@{@"characteristic_uuid": [characteristic.UUID uuidStr]} error:error];
     // Note: this callback is only called for writeWithResponse
     if (error) {
         Log(LERROR, @"didWriteValueForCharacteristic:");
@@ -1559,6 +1594,9 @@ didDiscoverCharacteristicsForService:(CBService *)service
     didUpdateNotificationStateForCharacteristic:(CBCharacteristic *)characteristic
                                           error:(NSError *)error
 {
+    [self trace:@"notify_state" peripheral:peripheral
+           data:@{@"characteristic_uuid": [characteristic.UUID uuidStr], @"is_notifying": @(characteristic.isNotifying)}
+          error:error];
     if (error) {
         Log(LERROR, @"didUpdateNotificationStateForCharacteristic:");
         Log(LERROR, @"  chr: %@", [characteristic.UUID uuidStr]);
@@ -1647,6 +1685,10 @@ didDiscoverCharacteristicsForService:(CBService *)service
     didWriteValueForDescriptor:(CBDescriptor *)descriptor
                          error:(NSError *)error
 {
+    if (error != nil) {
+        [self trace:@"descriptor_write_failed" peripheral:peripheral
+               data:@{@"characteristic_uuid": [descriptor.characteristic.UUID uuidStr]} error:error];
+    }
     if (error) {
         Log(LERROR, @"didWriteValueForDescriptor:");
         Log(LERROR, @"  chr: %@", [descriptor.characteristic.UUID uuidStr]);
@@ -1748,13 +1790,22 @@ didDiscoverCharacteristicsForService:(CBService *)service
     // The dart code will wait for this signal, so that we don't
     // queue writes too fast, which iOS would then drop the packets.
     
-    NSDictionary *request = [self.didWriteWithoutResponse objectForKey:[[peripheral identifier] UUIDString]];
+    NSString *remoteId = [[peripheral identifier] UUIDString];
+    NSDictionary *request = [self.didWriteWithoutResponse objectForKey:remoteId];
+    [self trace:@"ready_to_send" peripheral:peripheral data:@{@"awaiting_ready": @(request != nil)} error:nil];
     if (request == nil) {
         Log(LERROR, @"didWriteWithoutResponse is null");
         return;
     }
-    
-    // See BmWriteCharacteristicRequest
+
+    // Consumed, so a repeat callback cannot complete a later write that is still waiting.
+    [self.didWriteWithoutResponse removeObjectForKey:remoteId];
+    [self emitWrittenForRequest:request peripheral:peripheral];
+}
+
+// Reports a writeWithoutResponse as complete. See BmWriteCharacteristicRequest / BmCharacteristicData.
+- (void)emitWrittenForRequest:(NSDictionary *)request peripheral:(CBPeripheral *)peripheral
+{
     NSString  *primaryServiceUuid = request[@"primary_service_uuid"];
     NSString  *serviceUuid        = request[@"service_uuid"];
     NSString  *characteristicUuid = request[@"characteristic_uuid"];
@@ -1771,11 +1822,10 @@ didDiscoverCharacteristicsForService:(CBService *)service
                                                             error:&error];
 
     if (characteristic == nil) {
-        Log(LERROR, @"Error: peripheralIsReadyToSendWriteWithoutResponse: %@", [error localizedDescription]);
+        Log(LERROR, @"Error: emitWrittenForRequest: %@", [error localizedDescription]);
         return;
     }
 
-    // See BmCharacteristicData
     NSMutableDictionary* result = [@{
         @"remote_id":               [peripheral.identifier UUIDString],
         @"primary_service_uuid":    primaryServiceUuid != nil ? primaryServiceUuid : [NSNull null],
@@ -1792,6 +1842,24 @@ didDiscoverCharacteristicsForService:(CBService *)service
     if (!primaryServiceUuid) {[result removeObjectForKey:@"primary_service_uuid"];}
 
     [self.methodChannel invokeMethod:@"OnCharacteristicWritten" arguments:result];
+}
+
+// Native-side diagnostics for the app (e.g. Sentry breadcrumbs): queue state and CoreBluetooth error
+// codes that otherwise never leave this file. Never carries characteristic values - those can be
+// credentials.
+- (void)trace:(NSString *)event peripheral:(CBPeripheral *)peripheral data:(NSDictionary *)data error:(NSError *)error
+{
+    NSMutableDictionary *details = data != nil ? [data mutableCopy] : [NSMutableDictionary dictionary];
+    if (error != nil) {
+        details[@"error_domain"] = error.domain;
+        details[@"error_code"] = @(error.code);
+        details[@"error_string"] = [error localizedDescription] ?: @"";
+    }
+    NSMutableDictionary *args = [@{@"event": event, @"data": details} mutableCopy];
+    if (peripheral != nil) {
+        args[@"remote_id"] = [[peripheral identifier] UUIDString];
+    }
+    [self.methodChannel invokeMethod:@"OnNativeTrace" arguments:args];
 }
 
 //////////////////////////////////////////////////////////////////////
