@@ -41,6 +41,11 @@ class BluetoothEvents {
     return FlutterBlueUltraPlatform.instance.onNameChanged.map((p) => OnNameChangedEvent(p));
   }
 
+  /// Native-side diagnostics: write queue state and platform error codes. iOS only for now.
+  Stream<OnNativeTraceEvent> get onNativeTrace {
+    return FlutterBlueUltraPlatform.instance.onNativeTrace.map((p) => OnNativeTraceEvent(p));
+  }
+
   Stream<OnBondStateChangedEvent> get onBondStateChanged {
     return FlutterBlueUltraPlatform.instance.onBondStateChanged.map((p) => OnBondStateChangedEvent(p));
   }
@@ -237,6 +242,22 @@ class OnNameChangedEvent {
 
   /// the new name
   String? get name => _response.name;
+}
+
+// On Native Trace
+class OnNativeTraceEvent {
+  final BmNativeTrace _response;
+
+  OnNativeTraceEvent(this._response);
+
+  /// the relevant device, if the event concerns one
+  BluetoothDevice? get device => _response.remoteId != null ? BluetoothDevice(remoteId: _response.remoteId!) : null;
+
+  /// what happened, e.g. write_issued, ready_to_send, disconnected
+  String get event => _response.event;
+
+  /// event details; never characteristic values
+  Map<String, dynamic> get data => _response.data;
 }
 
 // On Bond State Changed

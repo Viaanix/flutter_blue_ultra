@@ -283,6 +283,37 @@ class BmNameChanged {
   }
 }
 
+/// A native-side diagnostic event: write queue state, platform error codes. Never carries
+/// characteristic values.
+class BmNativeTrace {
+  /// The device the event concerns, if any.
+  final DeviceIdentifier? remoteId;
+
+  /// What happened, e.g. `write_issued`, `ready_to_send`, `disconnected`.
+  final String event;
+
+  /// Event details, including `error_domain` / `error_code` / `error_string` when there was an error.
+  final Map<String, dynamic> data;
+
+  /// Creates a trace event.
+  BmNativeTrace({
+    required this.remoteId,
+    required this.event,
+    required this.data,
+  });
+
+  /// Decodes the platform channel payload.
+  factory BmNativeTrace.fromMap(Map<String, dynamic> json) {
+    final remoteId = json['remote_id'] as String?;
+    final data = json['data'];
+    return BmNativeTrace(
+      remoteId: remoteId != null ? DeviceIdentifier(remoteId) : null,
+      event: json['event'] as String,
+      data: data is Map ? Map<String, dynamic>.from(data) : const {},
+    );
+  }
+}
+
 class BmBluetoothService {
   final DeviceIdentifier remoteId;
   final Guid? primaryServiceUuid;

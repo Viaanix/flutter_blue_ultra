@@ -22,6 +22,7 @@ final class FlutterBlueUltraDarwin extends FlutterBlueUltraPlatform {
   final _onDiscoveredServicesController = StreamController<BmDiscoverServicesResult>.broadcast();
   final _onMtuChangedController = StreamController<BmMtuChangedResponse>.broadcast();
   final _onNameChangedController = StreamController<BmNameChanged>.broadcast();
+  final _onNativeTraceController = StreamController<BmNativeTrace>.broadcast();
   final _onReadRssiController = StreamController<BmReadRssiResult>.broadcast();
   final _onScanResponseController = StreamController<BmScanResponse>.broadcast();
   final _onServicesResetController = StreamController<BmBluetoothDevice>.broadcast();
@@ -69,6 +70,11 @@ final class FlutterBlueUltraDarwin extends FlutterBlueUltraPlatform {
   @override
   Stream<BmNameChanged> get onNameChanged {
     return _onNameChangedController.stream;
+  }
+
+  @override
+  Stream<BmNativeTrace> get onNativeTrace {
+    return _onNativeTraceController.stream;
   }
 
   @override
@@ -391,6 +397,10 @@ final class FlutterBlueUltraDarwin extends FlutterBlueUltraPlatform {
       case 'OnNameChanged':
         return _onNameChangedController.add(
           BmNameChanged.fromMap(args),
+        );
+      case 'OnNativeTrace':
+        return _onNativeTraceController.add(
+          BmNativeTrace.fromMap(args),
         );
       case 'OnReadRssi':
         return _onReadRssiController.add(

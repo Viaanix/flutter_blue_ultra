@@ -75,6 +75,11 @@ abstract base class FlutterBlueUltraPlatform {
     return Stream.empty();
   }
 
+  /// Native-side diagnostics (queue state, platform error codes). Currently emitted by darwin only.
+  Stream<BmNativeTrace> get onNativeTrace {
+    return Stream.empty();
+  }
+
   Stream<BmReadRssiResult> get onReadRssi {
     return Stream.empty();
   }
